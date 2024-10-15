@@ -1,0 +1,38 @@
+FROM --platform=$BUILDPLATFORM python:3.10-buster
+
+# Build Node arguments:
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+
+RUN echo "running on $BUILDPLATFORM, building for $TARGETPLATFORM" 
+
+ENV BASE_DIR=/home/app
+# This will be replaced when we run the image (dev, qa, uat, prod)
+ARG APP_ENV=APP_ENV
+ENV APP_ENV ${APP_ENV}
+
+RUN apt-get update \
+    && apt-get install gcc -y \
+    && apt-get clean
+
+
+
+RUN mkdir -p $BASE_DIR/log/
+
+WORKDIR $BASE_DIR
+
+COPY streamlit/requirements.txt Build/start-streamlit.sh $BASE_DIR/
+
+
+RUN chmod +x $BASE_DIR/start-server.sh \
+    && python -m pip install --upgrade pip \
+    && pip install -r $BASE_DIR/requirements.txt --cache-dir $BASE_DIR/pip_cache \
+    && pip install gunicorn[gevent]
+
+
+COPY . $BASE_DIR/codebase/
+# start server
+EXPOSE 8020
+STOPSIGNAL SIGTERM
+#CMD ["/home/app/start-server.sh"]
+CMD ["/bin/bash","-c","/home/app/start-streamlit.sh 2>&1 | tee -a /home/app/log/streamlit.log"]
