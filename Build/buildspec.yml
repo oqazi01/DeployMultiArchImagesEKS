@@ -1,0 +1,81 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo 'Installing Dependencies'
+      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2&
+      - curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+      - timeout 15 sh -c "until docker info; do echo .; sleep 1; done"
+      - apt-get update -y
+      - pip3 install --upgrade pip
+      - pip install pylint
+      - aws --version
+      - python --version
+      - echo 'Checking docker version:'
+      - docker version
+      - echo 'Checking docker version:'
+      - docker buildx version
+
+  pre_build:
+    commands:
+      - export DOCKER_CLI_EXPERIMENTAL=enabled
+      - echo 'Creating new builder instance'\
+      - docker buildx create --use --name multiarch --driver=docker-container --bootstrap
+      - echo 'Logging in to Amazon ECR...'
+      - REPOSITORY_URI=$ECR_BASE_URI/$ECR_REPO_NAME
+      - >-
+        aws ecr get-login-password --region $AWS_DEFAULT_REGION |
+        docker login --username AWS --password-stdin $ECR_BASE_URI
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${Environment}_${COMMIT_HASH:=latest}
+      - ARM_TAG=${COMMIT_HASH}-arm64
+      - AMD_TAG=${COMMIT_HASH}-amd64
+      #pulling dual platform images: 
+      - docker pull $REPOSITORY_URI:latest --platform=linux/amd64 || true
+      - docker pull $REPOSITORY_URI:latest --platform=linux/arm64 || true
+  
+  build:
+    commands:
+      - echo Build started on `date`
+      # Creating Virtual Environment to run the tests
+#      - python -m venv env
+#      - . env/bin/activate
+#      - pip3 install --upgrade pip
+#      - pip install -r ./requirements.txt
+#      - mkdir ../log/
+#      - python -m pytest --junit-xml=test_report.xml
+#      - rm -r env
+      # Building Docker Image
+      - echo Building the Docker image...
+      - docker buildx build --builder multiarch --platform linux/amd64 --load --build-arg APP_ENV=${Environment}  -t $REPOSITORY_URI:$AMD_TAG -f Build/dockerfile .
+      - docker tag $REPOSITORY_URI:$AMD_TAG $REPOSITORY_URI:latest     
+      - docker buildx build --builder multiarch --platform linux/arm64 --load --build-arg APP_ENV=${Environment}  -t $REPOSITORY_URI:$ARM_TAG -f Build/dockerfile .
+      - docker tag $REPOSITORY_URI:$ARM_TAG $REPOSITORY_URI:latest
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      #- docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$AMD_TAG
+      - docker push $REPOSITORY_URI:$ARM_TAG
+      - docker manifest create $REPOSITORY_URI:$IMAGE_TAG $REPOSITORY_URI:$ARM_TAG $REPOSITORY_URI:$AMD_TAG
+      - docker manifest annotate --arch arm64 $REPOSITORY_URI:$IMAGE_TAG $REPOSITORY_URI:$ARM_TAG
+      - docker manifest annotate --arch amd64 $REPOSITORY_URI:$IMAGE_TAG $REPOSITORY_URI:$AMD_TAG
+      - docker manifest inspect $REPOSITORY_URI:$IMAGE_TAG
+      - docker manifest push $REPOSITORY_URI:$IMAGE_TAG
+    # create latest tag for manifest list
+      - docker manifest create $REPOSITORY_URI:latest $REPOSITORY_URI:$ARM_TAG $REPOSITORY_URI:$AMD_TAG
+    #  - docker manifest annotate --arch arm64 $REPOSITORY_URI:latest $REPOSITORY_URI:$ARM_TAG
+    #  - docker manifest annotate --arch amd64 $REPOSITORY_URI:latest $REPOSITORY_URI:$AMD_TAG
+      - docker manifest inspect $REPOSITORY_URI:latest
+      - docker manifest push $REPOSITORY_URI:latest
+#reports:
+#  pytest_reports:
+#    files:
+#      - test_report.xml
+#    file-format: JUNITXML
+
+artifacts:
+    files:
+#      - pylint_report.txt
